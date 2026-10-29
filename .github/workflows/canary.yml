@@ -1,0 +1,60 @@
+# Roda os testes e um canary por cenário. Cada job confere se o canary tomou a
+# decisão CERTA: o saudável tem que promover; os defeituosos têm que dar rollback.
+# O resultado de cada canary aparece no resumo do run (aba Summary).
+name: Canary
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+
+  canary:
+    needs: testes
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { cenario: saudavel, requisicoes: 1000, esperado: promover }
+          - { cenario: erro, requisicoes: 1000, esperado: rollback }
+          - { cenario: lenta, requisicoes: 1000, esperado: rollback }
+          - { cenario: drift, requisicoes: 1000, esperado: rollback }
+          - { cenario: cold_start, requisicoes: 300, esperado: rollback }
+          - { cenario: cold_start, requisicoes: 1000, esperado: promover }
+    name: ${{ matrix.cenario }} · ${{ matrix.requisicoes }} req → ${{ matrix.esperado }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python demo.py --cenario ${{ matrix.cenario }} --requisicoes ${{ matrix.requisicoes }} --esperado ${{ matrix.esperado }}
+
+  # Regera o gráfico do experimento (docs/amostra.svg) e grava no repositório.
+  grafico:
+    needs: testes
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python experimento.py | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Gravar o gráfico se mudou
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/amostra.svg
+          git diff --cached --quiet || { git commit -m "docs: atualiza gráfico do experimento"; git push; }
